@@ -1,0 +1,461 @@
+{
+    "dns": {
+        "hosts": {
+            "lkfl2.nalog.ru": "213.24.64.175",
+            "lknpd.nalog.ru": "213.24.64.181"
+        },
+        "queryStrategy": "UseIPv4",
+        "servers": [
+            "1.1.1.1",
+            {
+                "address": "1.1.1.1",
+                "domains": [
+                ],
+                "port": 53
+            },
+            {
+                "address": "77.88.8.8",
+                "domains": [
+                ],
+                "port": 53
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "127.0.0.1",
+            "port": 10808,
+            "protocol": "socks",
+            "settings": {
+                "auth": "noauth",
+                "udp": true,
+                "userLevel": 8
+            },
+            "sniffing": {
+                "destOverride": [
+                    "http",
+                    "tls",
+                    "quic"
+                ],
+                "enabled": true
+            },
+            "tag": "socks"
+        },
+        {
+            "listen": "127.0.0.1",
+            "port": 11111,
+            "protocol": "dokodemo-door",
+            "settings": {
+                "address": "127.0.0.1"
+            },
+            "tag": "metrics_in"
+        }
+    ],
+    "log": {
+        "loglevel": "warning"
+    },
+    "metrics": {
+        "tag": "metrics_out"
+    },
+    "outbounds": [
+        {
+            "mux": {
+                "concurrency": -1,
+                "enabled": false,
+                "xudpConcurrency": 8,
+                "xudpProxyUDP443": ""
+            },
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "144.31.28.229",
+                        "port": 8443,
+                        "users": [
+                            {
+                                "encryption": "none",
+                                "id": "e2650d7f-581a-4e5d-9b9d-3d05d307439f",
+                                "level": 8,
+                                "security": "auto"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "network": "ws",
+                "security": "none",
+                "wsSettings": {
+                    "headers": {
+                        "Host": ""
+                    },
+                    "host": "",
+                    "path": "/video"
+                }
+            },
+            "tag": "proxy"
+        },
+        {
+            "protocol": "freedom",
+            "settings": {
+                "domainStrategy": "UseIP"
+            },
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "settings": {
+                "response": {
+                    "type": "http"
+                }
+            },
+            "tag": "block"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "statsUserDownlink": true,
+                "statsUserUplink": true
+            },
+            "8": {
+                "connIdle": 300,
+                "downlinkOnly": 1,
+                "handshake": 4,
+                "uplinkOnly": 1
+            }
+        },
+        "system": {
+            "statsInboundDownlink": true,
+            "statsInboundUplink": true,
+            "statsOutboundDownlink": true,
+            "statsOutboundUplink": true
+        }
+    },
+    "remarks": "🇫🇮 Обход БС",
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "ip": [
+                    "1.1.1.1"
+                ],
+                "outboundTag": "proxy",
+                "port": 53
+            },
+            {
+                "ip": [
+                    "77.88.8.8"
+                ],
+                "outboundTag": "direct",
+                "port": 53
+            },
+            {
+                "inboundTag": [
+                    "metrics_in"
+                ],
+                "outboundTag": "metrics_out"
+            },
+            {
+                "ip": [
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16",
+                    "169.254.0.0/16",
+                    "224.0.0.0/4",
+                    "255.255.255.255"
+                ],
+                "outboundTag": "direct"
+            }
+        ]
+    },
+    "stats": {
+    }
+}
+{
+  "dns": {
+    "servers": [
+      "1.1.1.1",
+      "1.0.0.1"
+    ],
+    "queryStrategy": "UseIP"
+  },
+  "routing": {
+    "rules": [
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "direct"
+      }
+    ],
+    "domainMatcher": "hybrid",
+    "domainStrategy": "IPIfNonMatch"
+  },
+  "inbounds": [
+    {
+      "tag": "socks",
+      "port": 10808,
+      "listen": "127.0.0.1",
+      "protocol": "socks",
+      "settings": {
+        "udp": true,
+        "auth": "noauth"
+      },
+      "sniffing": {
+        "enabled": true,
+        "routeOnly": false,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "http",
+      "port": 10809,
+      "listen": "127.0.0.1",
+      "protocol": "http",
+      "settings": {
+        "allowTransparent": false
+      },
+      "sniffing": {
+        "enabled": true,
+        "routeOnly": false,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "proxy",
+      "protocol": "vless",
+      "settings": {
+        "vnext": [
+          {
+            "address": "free6.anotherboring.top",
+            "port": 443,
+            "users": [
+              {
+                "id": "4a57b8ec-fad9-46cc-bad2-eb451167b06d",
+                "encryption": "none",
+                "flow": "xtls-rprx-vision"
+              }
+            ]
+          }
+        ]
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "tcpSettings": {},
+        "security": "reality",
+        "realitySettings": {
+          "serverName": "free6.anotherboring.top",
+          "publicKey": "D6XeTEyHUrcUWHuo5uNjBY3fQXhthHLLXdufndJlCGo",
+          "shortId": "fcc34c19a6bbe4bb",
+          "fingerprint": "qq"
+        }
+      }
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom"
+    },
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    }
+  ],
+  "remarks": "🇩🇪  Германия LTE"
+}
+{
+    "dns": {
+        "hosts": {
+            "lkfl2.nalog.ru": "213.24.64.175",
+            "lknpd.nalog.ru": "213.24.64.181"
+        },
+        "queryStrategy": "UseIPv4",
+        "servers": [
+            "1.1.1.1",
+            {
+                "address": "1.1.1.1",
+                "domains": [
+                ],
+                "port": 53
+            },
+            {
+                "address": "77.88.8.8",
+                "domains": [
+                ],
+                "port": 53
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "127.0.0.1",
+            "port": 10808,
+            "protocol": "socks",
+            "settings": {
+                "auth": "noauth",
+                "udp": true,
+                "userLevel": 8
+            },
+            "sniffing": {
+                "destOverride": [
+                    "http",
+                    "tls",
+                    "quic"
+                ],
+                "enabled": true
+            },
+            "tag": "socks"
+        },
+        {
+            "listen": "127.0.0.1",
+            "port": 11111,
+            "protocol": "dokodemo-door",
+            "settings": {
+                "address": "127.0.0.1"
+            },
+            "tag": "metrics_in"
+        }
+    ],
+    "log": {
+        "loglevel": "warning"
+    },
+    "metrics": {
+        "tag": "metrics_out"
+    },
+    "outbounds": [
+        {
+            "mux": {
+                "concurrency": -1,
+                "enabled": false,
+                "xudpConcurrency": 8,
+                "xudpProxyUDP443": ""
+            },
+            "protocol": "vless",
+            "settings": {
+                "vnext": [
+                    {
+                        "address": "81.163.23.115",
+                        "port": 2097,
+                        "users": [
+                            {
+                                "encryption": "none",
+                                "id": "214906b4-96fd-48f6-977b-a26a89b7b973",
+                                "level": 8,
+                                "security": "auto"
+                            }
+                        ]
+                    }
+                ]
+            },
+            "streamSettings": {
+                "grpcSettings": {
+                    "authority": "",
+                    "health_check_timeout": 20,
+                    "idle_timeout": 60,
+                    "initial_windows_size": 0,
+                    "multiMode": false,
+                    "permit_without_stream": false,
+                    "serviceName": "grpc"
+                },
+                "network": "grpc",
+                "realitySettings": {
+                    "allowInsecure": false,
+                    "fingerprint": "firefox",
+                    "publicKey": "DaIRouGSxxQDEv9WKRxD79b2Vt0fsw4yQOTeAmXUYCM",
+                    "serverName": "gazeta-business.ru",
+                    "shortId": "c05d4c564d2bcd",
+                    "show": false,
+                    "spiderX": "/"
+                },
+                "security": "reality"
+            },
+            "tag": "proxy"
+        },
+        {
+            "protocol": "freedom",
+            "settings": {
+                "domainStrategy": "UseIP"
+            },
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "settings": {
+                "response": {
+                    "type": "http"
+                }
+            },
+            "tag": "block"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "statsUserDownlink": true,
+                "statsUserUplink": true
+            },
+            "8": {
+                "connIdle": 300,
+                "downlinkOnly": 1,
+                "handshake": 4,
+                "uplinkOnly": 1
+            }
+        },
+        "system": {
+            "statsInboundDownlink": true,
+            "statsInboundUplink": true,
+            "statsOutboundDownlink": true,
+            "statsOutboundUplink": true
+        }
+    },
+    "remarks": "🇫🇮 Финляндия LTE",
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "ip": [
+                    "1.1.1.1"
+                ],
+                "outboundTag": "proxy",
+                "port": 53
+            },
+            {
+                "ip": [
+                    "77.88.8.8"
+                ],
+                "outboundTag": "direct",
+                "port": 53
+            },
+            {
+                "inboundTag": [
+                    "metrics_in"
+                ],
+                "outboundTag": "metrics_out"
+            },
+            {
+                "ip": [
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16",
+                    "169.254.0.0/16",
+                    "224.0.0.0/4",
+                    "255.255.255.255"
+                ],
+                "outboundTag": "direct"
+            }
+        ]
+    },
+    "stats": {
+    }
+}
