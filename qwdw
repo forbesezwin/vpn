@@ -1,0 +1,582 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local StarterGui = game:GetService("StarterGui")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+
+local SETTINGS = {
+	INVITE_REMOTE_PATH = nil,
+	AUTO_FIND_INVITE_REMOTE = true,
+	INVITE_NAME_HINTS = { "claninvite", "inviteplayer", "invite", "inviteclan", "joinclan", "addmember", "clanadd" },
+
+	ARGUMENT_MODE = "UserId",
+	CUSTOM_INVITE_ARGS = nil,
+
+	CLAN_CHECK_MODE = "Off",
+	CLAN_CHECK_REMOTE_PATH = nil,
+
+	CLAN_ATTRIBUTE_NAMES = { "ClanId", "ClanID", "Clan", "ClanName", "ClanTag", "CrewId", "GuildId", "GroupId", "TeamId" },
+	TARGET_INVITED_ATTRIBUTE_NAMES = { "PendingClanInvite", "ClanInvite", "InvitedToClan" },
+
+	DELAY_BETWEEN_INVITES = 0.2,
+	MAX_INVITES_PER_RUN = 100,
+	REMOTE_EVENT_ASSUME_SUCCESS = true,
+
+	SERVER_HOP_MIN_PLAYERS = 5,
+	SERVER_HOP_MAX_PLAYERS_RATIO = 0.9,
+}
+
+local busy = false
+local cachedInviteRemote = nil
+local guiInstance = nil
+
+local function notify(title, text)
+	pcall(function()
+		StarterGui:SetCore("SendNotification", {
+			Title = title,
+			Text = text,
+			Duration = 5,
+		})
+	end)
+end
+
+local function pack(...)
+	return { n = select("#", ...), ... }
+end
+
+local function unpackArgs(args)
+	return unpack(args, 1, args.n)
+end
+
+local function getServiceByName(name)
+	if name == "ReplicatedStorage" then
+		return ReplicatedStorage
+	elseif name == "Players" then
+		return Players
+	end
+	local ok, service = pcall(function()
+		return game:GetService(name)
+	end)
+	return ok and service or nil
+end
+
+local function getByPath(path)
+	if type(path) ~= "table" or #path == 0 then
+		return nil
+	end
+	local object = getServiceByName(path[1])
+	if not object then
+		return nil
+	end
+	for index = 2, #path do
+		object = object:FindFirstChild(path[index])
+		if not object then
+			return nil
+		end
+	end
+	return object
+end
+
+local function lower(text)
+	return string.lower(tostring(text))
+end
+
+local function nameLooksLikeInvite(name)
+	local lowered = lower(name)
+	for _, hint in ipairs(SETTINGS.INVITE_NAME_HINTS) do
+		if string.find(lowered, lower(hint), 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function findInviteRemote()
+	if cachedInviteRemote and cachedInviteRemote.Parent then
+		return cachedInviteRemote
+	end
+
+	if SETTINGS.INVITE_REMOTE_PATH then
+		local exact = getByPath(SETTINGS.INVITE_REMOTE_PATH)
+		if exact and (exact:IsA("RemoteEvent") or exact:IsA("RemoteFunction")) then
+			cachedInviteRemote = exact
+			print("[AutoInvite] Found remote by path:", cachedInviteRemote:GetFullName())
+			return cachedInviteRemote
+		end
+	end
+
+	if not SETTINGS.AUTO_FIND_INVITE_REMOTE then
+		return nil
+	end
+
+	for _, object in ipairs(ReplicatedStorage:GetDescendants()) do
+		if (object:IsA("RemoteEvent") or object:IsA("RemoteFunction")) and nameLooksLikeInvite(object.Name) then
+			cachedInviteRemote = object
+			print("[AutoInvite] Found remote by name:", cachedInviteRemote:GetFullName())
+			return cachedInviteRemote
+		end
+	end
+
+	return nil
+end
+
+local function getAttributeFromList(instance, names)
+	for _, name in ipairs(names) do
+		local value = instance:GetAttribute(name)
+		if value ~= nil and value ~= "" then
+			return value, name
+		end
+	end
+	return nil, nil
+end
+
+local function hasClan()
+	if SETTINGS.CLAN_CHECK_MODE == "Off" then
+		return true, nil
+	end
+
+	if SETTINGS.CLAN_CHECK_REMOTE_PATH then
+		local remote = getByPath(SETTINGS.CLAN_CHECK_REMOTE_PATH)
+		if not remote then
+			return false, "Remote проверки клана не найден."
+		end
+		if not remote:IsA("RemoteFunction") then
+			return false, "Remote проверки клана должен быть RemoteFunction."
+		end
+		local ok, result = pcall(function()
+			return remote:InvokeServer()
+		end)
+		if not ok then
+			return false, "Проверка клана не прошла."
+		end
+		if type(result) == "table" then
+			local value = result.hasClan == true or result.clan ~= nil or result.clanId ~= nil or result.ClanId ~= nil
+			return value, value and nil or "Нет клана."
+		end
+		local value = result == true or result ~= nil
+		return value, value and nil or "Нет клана."
+	end
+
+	local clanValue = getAttributeFromList(LocalPlayer, SETTINGS.CLAN_ATTRIBUTE_NAMES)
+	if clanValue ~= nil then
+		return true, nil
+	end
+
+	if SETTINGS.CLAN_CHECK_MODE == "Strict" then
+		return false, "Нет клана."
+	end
+
+	return true, "Клан не виден клиенту, проверка пропущена."
+end
+
+local function targetAlreadyInvited(target)
+	local value = getAttributeFromList(target, SETTINGS.TARGET_INVITED_ATTRIBUTE_NAMES)
+	return value ~= nil
+end
+
+local function targetHasClan(target)
+	local value = getAttributeFromList(target, SETTINGS.CLAN_ATTRIBUTE_NAMES)
+	return value ~= nil
+end
+
+local function getCandidates()
+	local candidates = {}
+	for _, target in ipairs(Players:GetPlayers()) do
+		if target ~= LocalPlayer and not targetAlreadyInvited(target) and not targetHasClan(target) then
+			table.insert(candidates, target)
+		end
+	end
+	return candidates
+end
+
+local function buildInviteArguments(target)
+	if type(SETTINGS.CUSTOM_INVITE_ARGS) == "function" then
+		return pack(SETTINGS.CUSTOM_INVITE_ARGS(LocalPlayer, target))
+	end
+	if SETTINGS.ARGUMENT_MODE == "Player" then
+		return pack(target)
+	elseif SETTINGS.ARGUMENT_MODE == "Name" then
+		return pack(target.Name)
+	end
+	return pack(target.UserId)
+end
+
+local function tryInviteWithMode(target, mode)
+	local remote = findInviteRemote()
+	if not remote then
+		return false, "Remote инвайта не найден."
+	end
+
+	local arg
+	if mode == "Player" then
+		arg = target
+	elseif mode == "Name" then
+		arg = target.Name
+	else
+		arg = target.UserId
+	end
+
+	if remote:IsA("RemoteFunction") then
+		local ok, result = pcall(function()
+			return remote:InvokeServer(arg)
+		end)
+		if not ok then
+			return false, "InvokeServer error"
+		end
+		if type(result) == "table" then
+			if result.ok == false or result.success == false or result.invited == false then
+				return false, result.message or "Сервер отказал"
+			end
+			return true
+		end
+		return result ~= false
+	elseif remote:IsA("RemoteEvent") then
+		local ok = pcall(function()
+			remote:FireServer(arg)
+		end)
+		if not ok then
+			return false, "FireServer error"
+		end
+		return SETTINGS.REMOTE_EVENT_ASSUME_SUCCESS
+	end
+	return false, "Not RemoteEvent/RemoteFunction"
+end
+
+local function invite(target)
+	if type(SETTINGS.CUSTOM_INVITE_ARGS) == "function" then
+		local remote = findInviteRemote()
+		if not remote then
+			return false, "Remote не найден"
+		end
+		local args = pack(SETTINGS.CUSTOM_INVITE_ARGS(LocalPlayer, target))
+		if remote:IsA("RemoteFunction") then
+			local ok, result = pcall(function()
+				return remote:InvokeServer(unpackArgs(args))
+			end)
+			return ok and (result ~= false), result
+		elseif remote:IsA("RemoteEvent") then
+			pcall(function()
+				remote:FireServer(unpackArgs(args))
+			end)
+			return true
+		end
+		return false
+	end
+
+	local ok, err = tryInviteWithMode(target, SETTINGS.ARGUMENT_MODE)
+	if ok then
+		return true
+	end
+
+	print("[AutoInvite] Mode " .. SETTINGS.ARGUMENT_MODE .. " failed: " .. tostring(err) .. ". Trying others...")
+
+	local modes = { "UserId", "Player", "Name" }
+	for _, mode in ipairs(modes) do
+		if mode ~= SETTINGS.ARGUMENT_MODE then
+			local ok2, err2 = tryInviteWithMode(target, mode)
+			if ok2 then
+				print("[AutoInvite] Mode " .. mode .. " worked!")
+				return true
+			end
+			print("[AutoInvite] Mode " .. mode .. " also failed: " .. tostring(err2))
+		end
+	end
+
+	return false, err
+end
+
+local function serverHop()
+	local placeId = game.PlaceId
+	local currentJobId = game.JobId
+	
+	print("[ServerHop] Searching for better server...")
+	status.Text = "S.Hop: поиск..."
+	
+	local url = "https://games.roblox.com/v1/games/" .. placeId .. "/servers/Public?sortOrder=Desc&limit=100"
+	
+	local success, response = pcall(function()
+		return game:HttpGet(url)
+	end)
+	
+	if not success then
+		print("[ServerHop] game:HttpGet failed: " .. tostring(response))
+		status.Text = "S.Hop: ошибка API"
+		notify("S.Hop", "Не удалось получить список серверов. Попробуй позже.")
+		return
+	end
+	
+	local httpService = game:GetService("HttpService")
+	local ok, data = pcall(function()
+		return httpService:JSONDecode(response)
+	end)
+	
+	if not ok or not data.data then
+		print("[ServerHop] Failed to parse server list")
+		status.Text = "S.Hop: ошибка данных"
+		notify("S.Hop", "Ошибка получения данных серверов.")
+		return
+	end
+	
+	local bestServer = nil
+	local bestPlayerCount = 0
+	local maxPlayers = 0
+	
+	for _, server in ipairs(data.data) do
+		if server.id ~= currentJobId and server.playing and server.maxPlayers then
+			local ratio = server.playing / server.maxPlayers
+			if server.playing >= SETTINGS.SERVER_HOP_MIN_PLAYERS and 
+			   ratio >= 0.3 and ratio <= SETTINGS.SERVER_HOP_MAX_PLAYERS_RATIO and
+			   server.playing > bestPlayerCount then
+				bestServer = server
+				bestPlayerCount = server.playing
+				maxPlayers = server.maxPlayers
+			end
+		end
+	end
+	
+	if bestServer then
+		print("[ServerHop] Found server: " .. bestPlayerCount .. "/" .. maxPlayers .. " players, JobId: " .. bestServer.id)
+		status.Text = "S.Hop: переход..."
+		notify("S.Hop", "Переход на сервер " .. bestPlayerCount .. "/" .. maxPlayers .. "...")
+		
+		local teleportOk, teleportErr = pcall(function()
+			TeleportService:TeleportToPlaceInstance(placeId, bestServer.id, LocalPlayer)
+		end)
+		
+		if not teleportOk then
+			print("[ServerHop] Teleport failed: " .. tostring(teleportErr))
+			status.Text = "S.Hop: ошибка"
+			notify("S.Hop", "Ошибка телепортации: " .. tostring(teleportErr))
+		end
+	else
+		print("[ServerHop] No suitable server found")
+		status.Text = "S.Hop: нет серверов"
+		notify("S.Hop", "Подходящий сервер не найден. Попробуй позже.")
+	end
+end
+
+local function createGui()
+	local oldGui = PlayerGui:FindFirstChild("ClanAutoInviteMenu")
+	if oldGui then
+		oldGui:Destroy()
+	end
+
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "ClanAutoInviteMenu"
+	gui.ResetOnSpawn = false
+	gui.IgnoreGuiInset = true
+	gui.Parent = PlayerGui
+
+	local frame = Instance.new("Frame")
+	frame.Name = "Menu"
+	frame.Size = UDim2.fromOffset(280, 160)
+	frame.Position = UDim2.new(0, 320, 0.5, -80)
+	frame.BackgroundColor3 = Color3.fromRGB(17, 18, 25)
+	frame.BorderSizePixel = 0
+	frame.Active = true
+	frame.Draggable = true
+	frame.Parent = gui
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 18)
+	corner.Parent = frame
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(55, 62, 76)
+	stroke.Thickness = 1
+	stroke.Parent = frame
+
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Position = UDim2.fromOffset(16, 10)
+	title.Size = UDim2.new(1, -32, 0, 22)
+	title.Font = Enum.Font.GothamBold
+	title.Text = "Авто-инвайт"
+	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.TextSize = 15
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = frame
+
+	local status = Instance.new("TextLabel")
+	status.BackgroundTransparency = 1
+	status.Position = UDim2.fromOffset(16, 38)
+	status.Size = UDim2.new(1, -110, 0, 40)
+	status.Font = Enum.Font.Gotham
+	status.Text = "Ожидание"
+	status.TextColor3 = Color3.fromRGB(164, 172, 190)
+	status.TextSize = 13
+	status.TextWrapped = true
+	status.TextXAlignment = Enum.TextXAlignment.Left
+	status.TextYAlignment = Enum.TextYAlignment.Top
+	status.Parent = frame
+
+	local toggle = Instance.new("TextButton")
+	toggle.Name = "Toggle"
+	toggle.Position = UDim2.new(1, -92, 0, 38)
+	toggle.Size = UDim2.fromOffset(52, 30)
+	toggle.BackgroundColor3 = Color3.fromRGB(64, 70, 86)
+	toggle.Text = ""
+	toggle.AutoButtonColor = false
+	toggle.Parent = frame
+
+	local toggleCorner = Instance.new("UICorner")
+	toggleCorner.CornerRadius = UDim.new(1, 0)
+	toggleCorner.Parent = toggle
+
+	local knob = Instance.new("Frame")
+	knob.Name = "Knob"
+	knob.Size = UDim2.fromOffset(24, 24)
+	knob.Position = UDim2.fromOffset(3, 3)
+	knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+	knob.BorderSizePixel = 0
+	knob.Parent = toggle
+
+	local knobCorner = Instance.new("UICorner")
+	knobCorner.CornerRadius = UDim.new(1, 0)
+	knobCorner.Parent = knob
+
+	local shopBtn = Instance.new("TextButton")
+	shopBtn.Name = "SHop"
+	shopBtn.Position = UDim2.new(1, -92, 0, 74)
+	shopBtn.Size = UDim2.fromOffset(52, 28)
+	shopBtn.BackgroundColor3 = Color3.fromRGB(59, 130, 246)
+	shopBtn.Font = Enum.Font.GothamBold
+	shopBtn.Text = "S.Hop"
+	shopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	shopBtn.TextSize = 11
+	shopBtn.AutoButtonColor = true
+	shopBtn.Parent = frame
+
+	local shopCorner = Instance.new("UICorner")
+	shopCorner.CornerRadius = UDim.new(0, 8)
+	shopCorner.Parent = shopBtn
+
+	local unloadBtn = Instance.new("TextButton")
+	unloadBtn.Name = "Unload"
+	unloadBtn.Position = UDim2.new(1, -36, 0, 74)
+	unloadBtn.Size = UDim2.fromOffset(28, 28)
+	unloadBtn.BackgroundColor3 = Color3.fromRGB(180, 40, 40)
+	unloadBtn.Font = Enum.Font.GothamBold
+	unloadBtn.Text = "X"
+	unloadBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+	unloadBtn.TextSize = 14
+	unloadBtn.AutoButtonColor = true
+	unloadBtn.Parent = frame
+
+	local unloadCorner = Instance.new("UICorner")
+	unloadCorner.CornerRadius = UDim.new(0, 8)
+	unloadCorner.Parent = unloadBtn
+
+	local hint = Instance.new("TextLabel")
+	hint.BackgroundTransparency = 1
+	hint.Position = UDim2.fromOffset(16, 138)
+	hint.Size = UDim2.new(1, -32, 0, 14)
+	hint.Font = Enum.Font.Gotham
+	hint.Text = "Перенос: потяни за меню"
+	hint.TextColor3 = Color3.fromRGB(99, 110, 130)
+	hint.TextSize = 10
+	hint.TextXAlignment = Enum.TextXAlignment.Left
+	hint.Parent = frame
+
+	return gui, frame, toggle, knob, status, shopBtn, unloadBtn
+end
+
+local function setToggle(toggle, knob, active)
+	if active then
+		toggle.BackgroundColor3 = Color3.fromRGB(34, 197, 94)
+		knob:TweenPosition(UDim2.fromOffset(25, 3), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+	else
+		toggle.BackgroundColor3 = Color3.fromRGB(64, 70, 86)
+		knob:TweenPosition(UDim2.fromOffset(3, 3), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+	end
+end
+
+local function runAutoInvite(toggle, knob, status)
+	if busy then
+		return
+	end
+
+	busy = true
+	setToggle(toggle, knob, true)
+	status.Text = "Проверка клана..."
+
+	local clanOk, clanMessage = hasClan()
+	if not clanOk then
+		status.Text = clanMessage or "Нет клана."
+		notify("Auto Invite", status.Text)
+		setToggle(toggle, knob, false)
+		busy = false
+		return
+	end
+
+	local remote = findInviteRemote()
+	if not remote then
+		status.Text = "Remote инвайта не найден."
+		notify("Auto Invite", "Укажи INVITE_REMOTE_PATH вверху скрипта.")
+		setToggle(toggle, knob, false)
+		busy = false
+		return
+	end
+
+	print("[AutoInvite] Using remote:", remote:GetFullName(), "| Mode:", SETTINGS.ARGUMENT_MODE)
+
+	local candidates = getCandidates()
+	print("[AutoInvite] Candidates:", #candidates)
+	for _, c in ipairs(candidates) do
+		print("  -", c.Name)
+	end
+
+	local invited = 0
+	local failed = 0
+
+	if #candidates == 0 then
+		status.Text = "Нет кандидатов."
+		notify("Auto Invite", "Все игроки уже в клане или приглашены.")
+		setToggle(toggle, knob, false)
+		busy = false
+		return
+	end
+
+	status.Text = "Инвайт 0/" .. #candidates
+
+	for index, target in ipairs(candidates) do
+		if invited >= SETTINGS.MAX_INVITES_PER_RUN then
+			break
+		end
+
+		local ok, err = invite(target)
+		if ok then
+			invited += 1
+		else
+			failed += 1
+			warn("[AutoInvite] Инвайт не прошел для " .. target.Name .. ": " .. tostring(err))
+		end
+
+		status.Text = "Инвайт " .. index .. "/" .. #candidates .. " | ok " .. invited
+		task.wait(SETTINGS.DELAY_BETWEEN_INVITES)
+	end
+
+	status.Text = "Приглашено: " .. invited .. ". Ошибок: " .. failed .. "."
+	notify("Auto Invite", "Приглашено игроков: " .. invited .. ". Работа завершена.")
+	setToggle(toggle, knob, false)
+	busy = false
+end
+
+local function unloadGui()
+	if guiInstance then
+		guiInstance:Destroy()
+		guiInstance = nil
+	end
+	print("[AutoInvite] Unloaded.")
+end
+
+guiInstance, frame, toggle, knob, status, shopBtn, unloadBtn = createGui()
+
+unloadBtn.MouseButton1Click:Connect(unloadGui)
+shopBtn.MouseButton1Click:Connect(serverHop)
+toggle.MouseButton1Click:Connect(function()
+	runAutoInvite(toggle, knob, status)
+end)
